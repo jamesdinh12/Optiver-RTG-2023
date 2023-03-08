@@ -66,3 +66,5 @@ ConnectionResetError: [WinError 10054] An existing connection was forcibly close
 2023-03-08 14:15:43,115 [INFO   ] [EXECUTION] fd=24 'TraderOne' is ready!
 2023-03-08 14:15:44,683 [INFO   ] [CONNECTION] fd=25 connection established: peer=127.0.0.1:58369
 2023-03-08 14:15:47,483 [INFO   ] [CONTROLLER] market open
+2023-03-08 14:21:34,953 [INFO   ] [APP] SIGTERM signal received - shutting down...
+2023-03-08 14:21:34,955 [INFO   ] [APP] closing event loop
