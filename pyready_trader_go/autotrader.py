@@ -29,6 +29,9 @@ TICK_SIZE_IN_CENTS = 100
 MIN_BID_NEAREST_TICK = (MINIMUM_BID + TICK_SIZE_IN_CENTS) // TICK_SIZE_IN_CENTS * TICK_SIZE_IN_CENTS
 MAX_ASK_NEAREST_TICK = MAXIMUM_ASK // TICK_SIZE_IN_CENTS * TICK_SIZE_IN_CENTS
 
+# Deviation Factor used to calculate upper and lower threshold of deviations of ETF from Future prices
+DEVIATION_FACTOR = 0.02
+
 
 class AutoTrader(BaseAutoTrader):
     """Example Auto-trader.
@@ -79,29 +82,62 @@ class AutoTrader(BaseAutoTrader):
         """
         self.logger.info("received order book for instrument %d with sequence number %d", instrument,
                          sequence_number)
+        
         if instrument == Instrument.FUTURE:
-            price_adjustment = - (self.position // LOT_SIZE) * TICK_SIZE_IN_CENTS
-            new_bid_price = bid_prices[0] + price_adjustment if bid_prices[0] != 0 else 0
-            new_ask_price = ask_prices[0] + price_adjustment if ask_prices[0] != 0 else 0
+            average_future_price = (ask_prices[0] + bid_prices[0])/2
+            upper_limit = average_future_price * (1 + DEVIATION_FACTOR)
+            lower_limit = average_future_price * (1 - DEVIATION_FACTOR)
 
-            if self.bid_id != 0 and new_bid_price not in (self.bid_price, 0):
+        if instrument == Instrument.ETF:
+
+            if self.bid_id != 0 and upper_limit not in (self.bid_price, 0):
                 self.send_cancel_order(self.bid_id)
                 self.bid_id = 0
-            if self.ask_id != 0 and new_ask_price not in (self.ask_price, 0):
+            if self.ask_id != 0 and lower_limit not in (self.ask_price, 0):
                 self.send_cancel_order(self.ask_id)
                 self.ask_id = 0
 
-            if self.bid_id == 0 and new_bid_price != 0 and self.position < POSITION_LIMIT:
-                self.bid_id = next(self.order_ids)
-                self.bid_price = new_bid_price
-                self.send_insert_order(self.bid_id, Side.BUY, new_bid_price, LOT_SIZE, Lifespan.GOOD_FOR_DAY)
-                self.bids.add(self.bid_id)
+            for ask in ask_prices:
+                if ask > upper_limit:
+                    self.bid_id = next(self.order_ids)
+                    self.bid_price = ask
+                    self.send_insert_order(self.bid_id, Side.BUY, self.bid_price, LOT_SIZE, Lifespan.FILL_AND_KILL)
+                    self.bids.add(self.bid_id)
+            for bid in bid_prices:
+                if bid < lower_limit:
+                    self.ask_id = next(self.order_ids)
+                    self.ask_price = bid
+                    self.send_insert_order(self.ask_id, Side.SELL, self.ask_price, LOT_SIZE, Lifespan.FILL_AND_KILL)
+                    self.asks.add(self.ask_id) 
+ 
 
-            if self.ask_id == 0 and new_ask_price != 0 and self.position > -POSITION_LIMIT:
-                self.ask_id = next(self.order_ids)
-                self.ask_price = new_ask_price
-                self.send_insert_order(self.ask_id, Side.SELL, new_ask_price, LOT_SIZE, Lifespan.GOOD_FOR_DAY)
-                self.asks.add(self.ask_id)
+
+        # if instrument == Instrument.FUTURE:
+        #     price_adjustment = - (self.position // LOT_SIZE) * TICK_SIZE_IN_CENTS
+        #     new_bid_price = bid_prices[0] + price_adjustment if bid_prices[0] != 0 else 0
+        #     new_ask_price = ask_prices[0] + price_adjustment if ask_prices[0] != 0 else 0
+
+        #     print(ask_prices)
+        #     print("future")
+
+        #     if self.bid_id != 0 and new_bid_price not in (self.bid_price, 0):
+        #         self.send_cancel_order(self.bid_id)
+        #         self.bid_id = 0
+        #     if self.ask_id != 0 and new_ask_price not in (self.ask_price, 0):
+        #         self.send_cancel_order(self.ask_id)
+        #         self.ask_id = 0
+
+        #     if self.bid_id == 0 and new_bid_price != 0 and self.position < POSITION_LIMIT:
+        #         self.bid_id = next(self.order_ids)
+        #         self.bid_price = new_bid_price
+        #         self.send_insert_order(self.bid_id, Side.BUY, new_bid_price, LOT_SIZE, Lifespan.FILL_AND_KILL)
+        #         self.bids.add(self.bid_id)
+
+        #     if self.ask_id == 0 and new_ask_price != 0 and self.position > -POSITION_LIMIT:
+        #         self.ask_id = next(self.order_ids)
+        #         self.ask_price = new_ask_price
+        #         self.send_insert_order(self.ask_id, Side.SELL, new_ask_price, LOT_SIZE, Lifespan.FILL_AND_KILL)
+        #         self.asks.add(self.ask_id)  
 
     def on_order_filled_message(self, client_order_id: int, price: int, volume: int) -> None:
         """Called when one of your orders is filled, partially or fully.
