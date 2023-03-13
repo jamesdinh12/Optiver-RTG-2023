@@ -17,17 +17,24 @@
 #     <https://www.gnu.org/licenses/>.
 import asyncio
 import itertools
+from statistics import mean
+
 
 from typing import List
 
 from ready_trader_go import BaseAutoTrader, Instrument, Lifespan, MAXIMUM_ASK, MINIMUM_BID, Side
 
 
-LOT_SIZE = 10
+LOT_SIZE = 30
 POSITION_LIMIT = 100
 TICK_SIZE_IN_CENTS = 100
 MIN_BID_NEAREST_TICK = (MINIMUM_BID + TICK_SIZE_IN_CENTS) // TICK_SIZE_IN_CENTS * TICK_SIZE_IN_CENTS
 MAX_ASK_NEAREST_TICK = MAXIMUM_ASK // TICK_SIZE_IN_CENTS * TICK_SIZE_IN_CENTS
+
+
+# Deviation Factor used to calculate upper and lower threshold of deviations of ETF from Future prices
+DEVIATION_FACTOR = 0.015
+WISDOM = 1
 
 
 class AutoTrader(BaseAutoTrader):
@@ -47,6 +54,28 @@ class AutoTrader(BaseAutoTrader):
         self.bids = set()
         self.asks = set()
         self.ask_id = self.ask_price = self.bid_id = self.bid_price = self.position = 0
+        self.best_bid_prices = []
+        self.best_ask_prices = []
+        self.best_bid_price = 0
+        self.best_ask_price = 0
+        self.bid_volume = []
+        self.ask_volume = []
+        self.bid_deviations = [0] * 12
+        self.ask_deviations = [0] * 12
+        self.good_to_buy = True
+        self.good_to_sell = True
+        self.bid_deviations_changes = [0] * (WISDOM + 1)
+        self.ask_deviations_changes = [0] * (WISDOM + 1)
+        self.average_bid_deviation = []
+        self.average_ask_deviation = []
+        self.sum_bid_deviation_dif = 0
+        self.sum_ask_deviation_dif = 0
+        self.average_bid_deviation_change = 0
+        self.average_ask_deviation_change = 0
+        self.average_ETF = 0
+        self.price_differences = [0] * 4
+        self.behaviour = 0
+
 
     def on_error_message(self, client_order_id: int, error_message: bytes) -> None:
         """Called when the exchange detects an error.
@@ -79,29 +108,161 @@ class AutoTrader(BaseAutoTrader):
         """
         self.logger.info("received order book for instrument %d with sequence number %d", instrument,
                          sequence_number)
+
+        
+        if instrument == Instrument.ETF:
+            self.best_ask_prices = ask_prices
+            self.best_bid_prices = bid_prices
+            self.bid_volume = bid_volumes
+            self.ask_volume = ask_volumes
+            self.best_ask_price = ask_prices[0]
+            self.best_bid_price = bid_prices[0]
+            mean_ask = mean(ask_prices)
+            mean_bid = mean(bid_prices)
+            self.average_ETF = (mean_ask + mean_bid)/2
+
         if instrument == Instrument.FUTURE:
+            
             price_adjustment = - (self.position // LOT_SIZE) * TICK_SIZE_IN_CENTS
             new_bid_price = bid_prices[0] + price_adjustment if bid_prices[0] != 0 else 0
             new_ask_price = ask_prices[0] + price_adjustment if ask_prices[0] != 0 else 0
 
-            if self.bid_id != 0 and new_bid_price not in (self.bid_price, 0):
-                self.send_cancel_order(self.bid_id)
-                self.bid_id = 0
-            if self.ask_id != 0 and new_ask_price not in (self.ask_price, 0):
-                self.send_cancel_order(self.ask_id)
-                self.ask_id = 0
+            average_future_price = (ask_prices[0] + bid_prices[0])/2
+            upper_limit = average_future_price * (1 + DEVIATION_FACTOR)
+            lower_limit = average_future_price * (1 - DEVIATION_FACTOR)
+            
 
-            if self.bid_id == 0 and new_bid_price != 0 and self.position < POSITION_LIMIT:
-                self.bid_id = next(self.order_ids)
-                self.bid_price = new_bid_price
-                self.send_insert_order(self.bid_id, Side.BUY, new_bid_price, LOT_SIZE, Lifespan.GOOD_FOR_DAY)
-                self.bids.add(self.bid_id)
+            self.price_differences.pop(-1)
+            self.price_differences.insert(0, average_future_price - self.average_ETF)
+            # print(self.price_differences)
 
-            if self.ask_id == 0 and new_ask_price != 0 and self.position > -POSITION_LIMIT:
-                self.ask_id = next(self.order_ids)
-                self.ask_price = new_ask_price
-                self.send_insert_order(self.ask_id, Side.SELL, new_ask_price, LOT_SIZE, Lifespan.GOOD_FOR_DAY)
-                self.asks.add(self.ask_id)
+            if all(price > 0 for price in self.price_differences):
+                self.behaviour = 1
+                # print(self.average_ETF)
+
+                
+            elif all(price < 0 for price in self.price_differences):
+                self.behaviour = -1
+                # print(self.average_ETF)
+                
+            else:
+                self.behaviour = 0
+
+            # print(self.behaviour)
+            # if self.behaviour == 0:
+
+
+            #ETF below FUTURE but moving in same direction
+            if self.behaviour == 1 and (max(self.price_differences) > (round(self.average_ETF/TICK_SIZE_IN_CENTS/2))):
+          
+
+                #     print("mark1")
+                if self.bid_id != 0 and new_bid_price not in (self.bid_price, 0):
+                    self.send_cancel_order(self.bid_id)
+                    self.bid_id = 0
+                    
+                if (self.bid_id == 0 and new_bid_price != 0 and self.position > -POSITION_LIMIT):
+                    self.bid_id = next(self.order_ids)
+                    self.bid_price = new_bid_price
+                    
+                    if ((self.position + LOT_SIZE) >= POSITION_LIMIT):
+                        self.send_insert_order(self.bid_id, Side.BUY, new_bid_price, POSITION_LIMIT - self.position - 1, Lifespan.FILL_AND_KILL)
+                    else:
+                        self.send_insert_order(self.bid_id, Side.BUY, new_bid_price, LOT_SIZE, Lifespan.FILL_AND_KILL)
+                    self.bids.add(self.bid_id)
+                    # if ((max(self.price_difference)) > 200):
+                    #     print("more than 200")
+            
+            #ETF above FUTURE but moving in same direction
+            elif self.behaviour == -1 and (min(self.price_differences) < -round(self.average_ETF/TICK_SIZE_IN_CENTS/2)):
+                print(-round(self.average_ETF/TICK_SIZE_IN_CENTS/2))
+        
+               
+            
+                if self.ask_id != 0 and new_ask_price not in (self.ask_price, 0):
+                    self.send_cancel_order(self.ask_id)
+                    self.ask_id = 0
+                        
+                if (self.ask_id == 0 and new_ask_price != 0 and self.position > -POSITION_LIMIT):
+                        self.ask_id = next(self.order_ids)
+                        self.ask_price = new_ask_price
+                        # if self.average_ask_deviation_change > 0:
+                        if ((self.position - LOT_SIZE) <= -POSITION_LIMIT):
+                            self.send_insert_order(self.ask_id, Side.SELL, new_ask_price, POSITION_LIMIT + self.position - 1, Lifespan.FILL_AND_KILL)
+                        else:
+                            self.send_insert_order(self.ask_id, Side.SELL, new_ask_price, LOT_SIZE, Lifespan.FILL_AND_KILL)
+                        self.asks.add(self.ask_id)
+                
+            #ETF and FUTURE are going to cross
+
+            self.bid_deviations.pop(-1)
+            self.bid_deviations.insert(0, lower_limit - self.best_bid_price)
+            
+            self.ask_deviations.pop(-1)
+            #bigger positive value indicates better selling opportunity
+            self.ask_deviations.insert(0, self.best_ask_price - upper_limit)
+    
+
+            self.average_bid_deviation = sum(self.bid_deviations) / len(self.bid_deviations)
+            self.average_ask_deviation = sum(self.ask_deviations) / len(self.ask_deviations)
+            
+            for i in range(WISDOM):
+                self.bid_deviations_changes.pop(-1)
+                self.bid_deviations_changes.insert(0, self.bid_deviations[i] - self.bid_deviations[i+1])
+                self.ask_deviations_changes.pop(-1)
+                self.ask_deviations_changes.insert(0, self.ask_deviations[i] - self.ask_deviations[i+1])
+
+            if all(changes >= 0 for changes in self.bid_deviations_changes) or sum(self.bid_deviations_changes) > 0:
+                self.good_to_buy = True
+            else:
+                self.good_to_buy = False
+                
+            if all(changes >= 0 for changes in self.ask_deviations_changes) or sum(self.bid_deviations_changes) > 0:
+                self.good_to_sell = True
+            else:
+                self.good_to_sell = False
+
+            # print(self.bid_deviations_changes, self.ask_deviations_changes)
+            # print(self.good_to_buy, self.good_to_sell)
+
+            for index, bid in enumerate(self.best_bid_prices): 
+            
+                if bid < lower_limit:
+                    
+                    if self.bid_id != 0 and new_bid_price not in (self.bid_price, 0):
+                        self.send_cancel_order(self.bid_id)
+                        self.bid_id = 0
+
+                    if (self.bid_id == 0 and new_bid_price != 0 and self.position < POSITION_LIMIT):
+                        if (self.good_to_buy) or (self.bid_deviations[0] > self.average_bid_deviation): #and self.bid_deviations[0] > self.average_bid_deviation:
+                            self.bid_id = next(self.order_ids)
+                            self.bid_price = new_bid_price
+
+                        # if self.average_bid_deviation_change > 0:
+                        if ((self.position + LOT_SIZE) >= POSITION_LIMIT):
+                            self.send_insert_order(self.bid_id, Side.BUY, new_bid_price, POSITION_LIMIT - self.position - 1, Lifespan.FILL_AND_KILL)
+                        else:
+                            self.send_insert_order(self.bid_id, Side.BUY, new_bid_price, LOT_SIZE * round(self.bid_deviations[0] / self.average_bid_deviation), Lifespan.FILL_AND_KILL)
+                        self.bids.add(self.bid_id)
+
+            for index, ask in enumerate(self.best_ask_prices):
+                if ask > upper_limit:
+                    # print('more than upper limit')
+                    if self.ask_id != 0 and new_ask_price not in (self.ask_price, 0):
+                        self.send_cancel_order(self.ask_id)
+                        self.ask_id = 0
+
+                    if (self.ask_id == 0 and new_ask_price != 0 and self.position > -POSITION_LIMIT):
+                        if (self.good_to_sell) or (self.ask_deviations[0] > self.average_ask_deviation): #and self.ask_deviations[0] > self.average_ask_deviation:
+                            self.ask_id = next(self.order_ids)
+                            self.ask_price = new_ask_price
+                        # if self.average_ask_deviation_change > 0:
+                        if ((self.position - LOT_SIZE) <= -POSITION_LIMIT):
+                            self.send_insert_order(self.ask_id, Side.SELL, new_ask_price, POSITION_LIMIT + self.position - 1, Lifespan.FILL_AND_KILL)
+                        else:
+                            self.send_insert_order(self.ask_id, Side.SELL, new_ask_price, LOT_SIZE * round(self.ask_deviations[0] / self.average_ask_deviation), Lifespan.FILL_AND_KILL)
+                        self.asks.add(self.ask_id)
+                        # print('mark 2')
 
     def on_order_filled_message(self, client_order_id: int, price: int, volume: int) -> None:
         """Called when one of your orders is filled, partially or fully.
