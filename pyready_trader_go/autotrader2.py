@@ -30,6 +30,14 @@ MIN_BID_NEAREST_TICK = (MINIMUM_BID + TICK_SIZE_IN_CENTS) // TICK_SIZE_IN_CENTS 
 MAX_ASK_NEAREST_TICK = MAXIMUM_ASK // TICK_SIZE_IN_CENTS * TICK_SIZE_IN_CENTS
 
 
+### User defined variables
+# Deviation factor used to calculate upper and lower bounds of average future prices
+DEVIATION_FACTOR = 0.002
+LOOK_BACK = 8
+WISDOM = 1
+
+
+
 class AutoTrader(BaseAutoTrader):
     """Example Auto-trader.
 
@@ -47,6 +55,25 @@ class AutoTrader(BaseAutoTrader):
         self.bids = set()
         self.asks = set()
         self.ask_id = self.ask_price = self.bid_id = self.bid_price = self.position = 0
+
+        # EFT data
+        self.eft_ask_prices = self.eft_bid_prices = []
+        self.eft_ask_vol = self.eft_bid_vol = []
+
+        # Recent instrument price deviations
+        self.instr_price_dev = [0] * LOOK_BACK
+        self.bid_deviation = [0] * LOOK_BACK
+        self.ask_deviation = [0] * LOOK_BACK
+        self.eft_behaviour = 0
+
+        self.avg_bid_deviation = 0
+        self.avg_ask_deviation = 0
+        self.bid_dev_changes = [0] * (WISDOM + 1)
+        self.ask_dev_changes = [0] * (WISDOM + 1)
+
+        # Flags for buying/selling
+        self.good_to_buy = False
+        self.good_to_sell = False
 
     def on_error_message(self, client_order_id: int, error_message: bytes) -> None:
         """Called when the exchange detects an error.
@@ -79,6 +106,80 @@ class AutoTrader(BaseAutoTrader):
         """
         self.logger.info("received order book for instrument %d with sequence number %d", instrument,
                          sequence_number)
+        
+
+        if instrument == Instrument.EFT:
+            self.eft_ask_prices = ask_prices
+            self.eft_ask_vol = ask_volumes
+            self.eft_bid_prices = bid_prices
+            self.eft_bid_vol = bid_volumes
+
+        if instrument == Instrument.FUTURE:
+            
+            # We determine an average future price as the current market, and calculuate a buffer zone around it (0.2%)
+            avg_future_price = (ask_prices[0] + bid_prices[0]) / 2
+            future_upr_bound = avg_future_price * (1 + DEVIATION_FACTOR)
+            future_lwr_bound = avg_future_price * (1 - DEVIATION_FACTOR)
+
+            avg_eft_price = (mean(self.eft_ask_prices) + mean(self.eft_bid_prices)) / 2
+
+            ### Wholistic Market Movement -- COME BACK TO THIS
+            
+            # # Deviation of EFT /from/ future
+            # self.instr_price_dev.insert(0, avg_future_price - avg_eft_price)
+            #
+            # if all(price > 0 for price in self.instr_price_dev):
+            #     self.eft_behaviour = 1    # EFT above FUTURE
+            # elif all(price < 0 for price in self.instr_price_dev):
+            #     self.eft_behaviour = -1   # EFT below FUTURE
+            # else:
+            #     self.eft_behaviour = 0    # third thing
+            #
+            # # I want to see if the market is moving up or down
+            # # This is a (very) general trend
+            # market_mvmt = self.eft_behaviour[-1] - self.eft_behaviour[0]
+
+
+            self.bid_deviation.insert(0, future_lwr_bound - self.eft_bid_prices[0])
+            self.ask_deviation.insert(0, self.eft_ask_prices[0] - future_upr_bound)
+            self.avg_bid_deviation = sum(self.bid_deviation) / len(self.bid_deviation)
+            self.avg_ask_deviation = sum(self.ask_deviation) / len(self.ask_deviation)
+
+            for i in range(WISDOM):
+                self.bid_dev_changes.insert(0, self.bid_deviation[i] - self.bid_deviation[i + 1])
+                self.ask_dev_changes.insert(0, self.ask_deviation[i] - self.ask_deviation[i + 2])
+
+            if all(changes >= 0 for changes in self.bid_dev_changes) or sum(self.bid_dev_changes) > 0:
+                self.good_to_buy = True
+            else:
+                self.good_to_buy = False
+
+            if all(changes >= 0 for changes in self.ask_dev_changes) or sum(self.ask_dev_changes) > 0:
+                self.good_to_sell = True
+            else:
+                self.good_to_sell = False
+
+
+            for bid in self.eft_bid_prices:
+
+                if bid < future_lwr_bound:
+                    # We're only hitting, so no need to cancel orders
+                    # 
+                    # if self.bid_id != 0 and new_bid_price not in (self.bid_price, 0):
+                    #     self.send_cancel_order(self.bid_id)
+                    #     self.bid_id = 0
+                    
+                    if self.bid_id == 0 and self.position < POSITION_LIMIT: # and new_bid_price != 0 
+                        
+                        if self.good_to_buy
+
+                    
+
+
+
+            
+        
+        
         if instrument == Instrument.FUTURE:
             price_adjustment = - (self.position // LOT_SIZE) * TICK_SIZE_IN_CENTS
             new_bid_price = bid_prices[0] + price_adjustment if bid_prices[0] != 0 else 0
