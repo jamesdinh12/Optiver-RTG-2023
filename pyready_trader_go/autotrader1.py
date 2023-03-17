@@ -171,9 +171,11 @@ class AutoTrader(BaseAutoTrader):
                     
                     if ((self.position + LOT_SIZE) >= POSITION_LIMIT):
                         self.send_insert_order(self.bid_id, Side.BUY, new_bid_price, POSITION_LIMIT - self.position - 1, Lifespan.FILL_AND_KILL)
+                        self.bids.add(self.bid_id)
                     else:
                         self.send_insert_order(self.bid_id, Side.BUY, new_bid_price, LOT_SIZE, Lifespan.FILL_AND_KILL)
-                    self.bids.add(self.bid_id)
+                        self.bids.add(self.bid_id)
+                    
                     # if ((max(self.price_difference)) > 200):
                     #     print("more than 200")
             
@@ -193,17 +195,19 @@ class AutoTrader(BaseAutoTrader):
                         # if self.average_ask_deviation_change > 0:
                         if ((self.position - LOT_SIZE) <= -POSITION_LIMIT):
                             self.send_insert_order(self.ask_id, Side.SELL, new_ask_price, POSITION_LIMIT + self.position - 1, Lifespan.FILL_AND_KILL)
+                            self.asks.add(self.ask_id)
                         else:
                             self.send_insert_order(self.ask_id, Side.SELL, new_ask_price, LOT_SIZE, Lifespan.FILL_AND_KILL)
-                        self.asks.add(self.ask_id)
+                            self.asks.add(self.ask_id)
+                        
                 
             #ETF and FUTURE are going to cross
 
-            self.bid_deviations.pop(-1)
+            # self.bid_deviations.pop(-1)
             self.bid_deviations.insert(0, lower_limit - self.best_bid_price)
             
-            self.ask_deviations.pop(-1)
-            #bigger positive value indicates better selling opportunity
+            # self.ask_deviations.pop(-1)
+            # bigger positive value indicates better selling opportunity
             self.ask_deviations.insert(0, self.best_ask_price - upper_limit)
     
 
@@ -241,13 +245,15 @@ class AutoTrader(BaseAutoTrader):
                         if (self.good_to_buy) or (self.bid_deviations[0] > self.average_bid_deviation): #and self.bid_deviations[0] > self.average_bid_deviation:
                             self.bid_id = next(self.order_ids)
                             self.bid_price = new_bid_price
-
+                            
                         # if self.average_bid_deviation_change > 0:
                         if ((self.position + LOT_SIZE) >= POSITION_LIMIT):
                             self.send_insert_order(self.bid_id, Side.BUY, new_bid_price, POSITION_LIMIT - self.position - 1, Lifespan.FILL_AND_KILL)
+                            self.bids.add(self.bid_id)
                         else:
                             self.send_insert_order(self.bid_id, Side.BUY, new_bid_price, LOT_SIZE * round(self.bid_deviations[0] / self.average_bid_deviation), Lifespan.FILL_AND_KILL)
-                        self.bids.add(self.bid_id)
+                            self.bids.add(self.bid_id)
+                        
 
             for index, ask in enumerate(self.best_ask_prices):
                 if ask > upper_limit:
@@ -260,12 +266,15 @@ class AutoTrader(BaseAutoTrader):
                         if (self.good_to_sell) or (self.ask_deviations[0] > self.average_ask_deviation): #and self.ask_deviations[0] > self.average_ask_deviation:
                             self.ask_id = next(self.order_ids)
                             self.ask_price = new_ask_price
+                            
                         # if self.average_ask_deviation_change > 0:
                         if ((self.position - LOT_SIZE) <= -POSITION_LIMIT):
-                            self.send_insert_order(self.ask_id, Side.SELL, new_ask_price, POSITION_LIMIT + self.position - 1, Lifespan.FILL_AND_KILL)
+                            self.send_insert_order(self.ask_id, Side.SELL, new_ask_price, -POSITION_LIMIT + self.position - 1, Lifespan.FILL_AND_KILL)
+                            self.asks.add(self.ask_id)
                         else:
                             self.send_insert_order(self.ask_id, Side.SELL, new_ask_price, LOT_SIZE * round(self.ask_deviations[0] / self.average_ask_deviation), Lifespan.FILL_AND_KILL)
-                        self.asks.add(self.ask_id)
+                            self.asks.add(self.ask_id)
+                        
                         # print('mark 2')
 
     def on_order_filled_message(self, client_order_id: int, price: int, volume: int) -> None:
