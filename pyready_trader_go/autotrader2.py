@@ -33,7 +33,7 @@ MAX_ASK_NEAREST_TICK = MAXIMUM_ASK // TICK_SIZE_IN_CENTS * TICK_SIZE_IN_CENTS
 ### User defined variables
 # Deviation factor used to calculate upper and lower bounds of average future prices
 DEVIATION_FACTOR = 0.002
-HISTORY = 8
+HISTORY = 4
 WISDOM = 1
 
 
@@ -57,14 +57,17 @@ class AutoTrader(BaseAutoTrader):
         self.ask_id = self.ask_price = self.bid_id = self.bid_price = self.position = 0
 
         # ETF data
-        self.etf_ask_prices = self.etf_bid_prices = [0]
-        self.etf_ask_vol = self.etf_bid_vol = [0]
+        self.etf_ask_prices = [0]
+        self.etf_bid_prices = [0]
+        self.etf_ask_vol = [0]
+        self.etf_bid_vol = [0]
+        self.etf_behaviour = 0
 
         # Recent instrument price deviations
         self.instr_price_dev = [0] * HISTORY
         self.bid_deviation = [0] * HISTORY
         self.ask_deviation = [0] * HISTORY
-        self.etf_behaviour = 0
+        
 
         self.avg_bid_deviation = 0
         self.avg_ask_deviation = 0
@@ -108,39 +111,84 @@ class AutoTrader(BaseAutoTrader):
                          sequence_number)
         
         if instrument == Instrument.ETF:
-            print("instrument.etf")
             self.etf_ask_prices = ask_prices
             self.etf_ask_vol = ask_volumes
             self.etf_bid_prices = bid_prices
             self.etf_bid_vol = bid_volumes
 
         if instrument == Instrument.FUTURE:
-            print("instrument.future")
             
             # We determine an average future price as the current market, and calculuate a buffer zone around it (0.2%)
             avg_future_price = (ask_prices[0] + bid_prices[0]) / 2
             future_upr_bound = avg_future_price * (1 + DEVIATION_FACTOR)
             future_lwr_bound = avg_future_price * (1 - DEVIATION_FACTOR)
 
-            #avg_etf_price = (mean(self.etf_ask_prices) + mean(self.etf_bid_prices)) / 2
-
             ### Wholistic Market Movement -- COME BACK TO THIS
+            avg_etf_price = (mean(self.etf_ask_prices) + mean(self.etf_bid_prices)) / 2
             
-            # # Deviation of EFT /from/ future
-            # self.instr_price_dev.insert(0, avg_future_price - avg_eft_price)
-            #
-            # if all(price > 0 for price in self.instr_price_dev):
-            #     self.eft_behaviour = 1    # EFT above FUTURE
-            # elif all(price < 0 for price in self.instr_price_dev):
-            #     self.eft_behaviour = -1   # EFT below FUTURE
-            # else:
-            #     self.eft_behaviour = 0    # third thing
+            # Deviation of EFT /from/ future
+            self.instr_price_dev.pop(-1)
+            self.instr_price_dev.insert(0, int(avg_future_price) - int(avg_etf_price))
+            
+            if all(price < 0 for price in self.instr_price_dev):
+                self.etf_behaviour = 1    # ETF above FUTURE
+
+                new_ask_price = ask_prices[0] + TICK_SIZE_IN_CENTS if ask_prices[0] != 0 else 0
+                    
+                # We're only hitting, so no need to cancel orders
+                if self.ask_id != 0 and new_ask_price not in (self.ask_price, 0):
+                    # self.send_cancel_order(self.ask_id)
+                    # self.ask_id = 0
+                    new_ask_price = self.etf_ask_prices[0]
+
+                self.ask_id = next(self.order_ids)
+                self.ask_price = new_ask_price
+            
+                if ((self.position - LOT_SIZE) <= -POSITION_LIMIT):
+                    lot = POSITION_LIMIT + self.position - 1
+                else:
+                    if self.etf_ask_vol[0] < LOT_SIZE:
+                        lot = self.etf_ask_vol[0]
+                    else:
+                        lot = LOT_SIZE
+                
+                self.send_insert_order(self.ask_id, Side.SELL, new_ask_price, lot, Lifespan.FILL_AND_KILL)
+                self.asks.add(self.ask_id)
+                print("order sell (ETF above FUTURE)")
+
+            elif all(price > 0 for price in self.instr_price_dev):
+                self.etf_behaviour = -1   # ETF below FUTURE
+
+                new_bid_price = bid_prices[0] - TICK_SIZE_IN_CENTS if bid_prices[0] != 0 else 0
+                    
+                # We're only hitting, so no need to cancel orders
+                if self.bid_id != 0 and new_bid_price not in (self.bid_price, 0):
+                    # self.send_cancel_order(self.bid_id)
+                    # self.bid_id = 0
+                    new_bid_price = self.etf_bid_prices[0]
+                
+                self.bid_id = next(self.order_ids)
+                self.bid_price = new_bid_price
+            
+                if ((self.position + LOT_SIZE) >= POSITION_LIMIT):
+                    lot = POSITION_LIMIT - self.position - 1
+                else:
+                    if self.etf_bid_vol[0] < LOT_SIZE:
+                        lot = self.etf_bid_vol[0]
+                    else:
+                        lot = LOT_SIZE
+                
+                self.send_insert_order(self.bid_id, Side.BUY, new_bid_price, lot, Lifespan.FILL_AND_KILL)
+                self.bids.add(self.bid_id)
+                print("order buy (ETF below FUTURE)")
+
+            else:
+                self.etf_behaviour = 0    # third thing
             #
             # # I want to see if the market is moving up or down
             # # This is a (very) general trend
-            # market_mvmt = self.eft_behaviour[-1] - self.eft_behaviour[0]
+            # market_mvmt = self.etf_behaviour[-1] - self.etf_behaviour[0]
 
-            print(self.etf_bid_prices, self.etf_ask_prices)
 
             self.bid_deviation.pop(-1)
             self.bid_deviation.insert(0, future_lwr_bound - self.etf_bid_prices[0])
@@ -174,68 +222,63 @@ class AutoTrader(BaseAutoTrader):
             # print(self.good_to_buy, self.good_to_sell)
 
             for bid in self.etf_bid_prices:
-                print(bid)
 
                 if bid < future_lwr_bound:
                     new_bid_price = bid_prices[0] - TICK_SIZE_IN_CENTS if bid_prices[0] != 0 else 0
                     
                     # We're only hitting, so no need to cancel orders
-                    # 
                     if self.bid_id != 0 and new_bid_price not in (self.bid_price, 0):
                         # self.send_cancel_order(self.bid_id)
                         # self.bid_id = 0
-                        new_bid_price = bid_prices[0]
-
-                    
-                    
+                        new_bid_price = self.etf_bid_prices[0]
                     
                     if self.bid_id == 0 and self.position < POSITION_LIMIT and new_bid_price != 0: 
                         
                         if self.good_to_buy:
-                            print("good to buy")
                             self.bid_id = next(self.order_ids)
                             self.bid_price = new_bid_price
                         
                             if ((self.position + LOT_SIZE) >= POSITION_LIMIT):
                                 lot = POSITION_LIMIT - self.position - 1
                             else:
-                                lot = LOT_SIZE
+                                if self.etf_bid_vol[0] < LOT_SIZE:
+                                    lot = self.etf_bid_vol[0]
+                                else:
+                                    lot = LOT_SIZE
                             
-                            print("attemping to buy")
-                            self.send_insert_order(self.bid_id, Side.BUY, new_bid_price, lot, Lifespan.FAK)
+                            self.send_insert_order(self.bid_id, Side.BUY, new_bid_price, lot, Lifespan.FILL_AND_KILL)
                             self.bids.add(self.bid_id)
-                            print("bought")
+                            print("order buy (good to buy)")
                         
 
             for ask in self.etf_ask_prices:
-                print(ask)
 
                 if ask > future_upr_bound:
                     new_ask_price = ask_prices[0] + TICK_SIZE_IN_CENTS if ask_prices[0] != 0 else 0
                     
                     # We're only hitting, so no need to cancel orders
-                    # 
                     if self.ask_id != 0 and new_ask_price not in (self.ask_price, 0):
                         # self.send_cancel_order(self.ask_id)
                         # self.ask_id = 0
-                        new_ask_price = ask_prices[0]
+                        new_ask_price = self.etf_ask_prices[0]
                     
                     if self.ask_id == 0 and self.position > -POSITION_LIMIT and new_ask_price != 0: 
                         
                         if self.good_to_sell:
-                            print("good to sell")
                             self.ask_id = next(self.order_ids)
                             self.ask_price = new_ask_price
                         
                             if ((self.position - LOT_SIZE) <= -POSITION_LIMIT):
                                 lot = POSITION_LIMIT + self.position - 1
                             else:
-                                lot = LOT_SIZE
+                                if self.etf_ask_vol[0] < LOT_SIZE:
+                                    lot = self.etf_ask_vol[0]
+                                else:
+                                    lot = LOT_SIZE
                             
-                            print("attempting to sell")
-                            self.send_insert_order(self.ask_id, Side.SELL, new_ask_price, lot, Lifespan.FAK)
+                            self.send_insert_order(self.ask_id, Side.SELL, new_ask_price, lot, Lifespan.FILL_AND_KILL)
                             self.asks.add(self.ask_id)
-                            print("sold")
+                            print("order sell (good to sell)")
                         
 
 
@@ -250,9 +293,11 @@ class AutoTrader(BaseAutoTrader):
                          price, volume)
         if client_order_id in self.bids:
             self.position += volume
+            print("bought")
             self.send_hedge_order(next(self.order_ids), Side.ASK, MIN_BID_NEAREST_TICK, volume)
         elif client_order_id in self.asks:
             self.position -= volume
+            print("sell")
             self.send_hedge_order(next(self.order_ids), Side.BID, MAX_ASK_NEAREST_TICK, volume)
 
     def on_order_status_message(self, client_order_id: int, fill_volume: int, remaining_volume: int,
@@ -291,3 +336,10 @@ class AutoTrader(BaseAutoTrader):
         """
         self.logger.info("received trade ticks for instrument %d with sequence number %d", instrument,
                          sequence_number)
+
+
+
+### User functions
+
+def mean(lst):
+    return sum(lst) / len(lst)
