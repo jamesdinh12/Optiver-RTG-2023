@@ -140,6 +140,8 @@ class AutoTrader(BaseAutoTrader):
             # # This is a (very) general trend
             # market_mvmt = self.eft_behaviour[-1] - self.eft_behaviour[0]
 
+            print(self.etf_bid_prices, self.etf_ask_prices)
+
             self.bid_deviation.pop(-1)
             self.bid_deviation.insert(0, future_lwr_bound - self.etf_bid_prices[0])
             self.ask_deviation.pop(-1)
@@ -149,7 +151,7 @@ class AutoTrader(BaseAutoTrader):
             self.avg_ask_deviation = sum(self.ask_deviation) / len(self.ask_deviation)
 
             for i in range(WISDOM):
-                self.bid_deviation.pop(-1)
+                self.bid_dev_changes.pop(-1)
                 self.bid_dev_changes.insert(0, self.bid_deviation[i] - self.bid_deviation[i + 1])
                 self.ask_dev_changes.pop(-1)
                 self.ask_dev_changes.insert(0, self.ask_deviation[i] - self.ask_deviation[i + 1])
@@ -164,63 +166,76 @@ class AutoTrader(BaseAutoTrader):
             else:
                 self.good_to_sell = False
 
-            price_adjustment = - (self.position // LOT_SIZE) * TICK_SIZE_IN_CENTS
-            print(self.etf_bid_prices, self.etf_ask_prices)
-            new_bid_price = self.etf_bid_prices[0] + price_adjustment if self.etf_bid_prices[0] != 0 else 0
-            new_ask_price = self.etf_ask_prices[0] + price_adjustment if self.etf_ask_prices[0] != 0 else 0
-            print(new_bid_price, new_ask_price)
+            # price_adjustment = - (self.position // LOT_SIZE) * TICK_SIZE_IN_CENTS
+            # new_bid_price = self.etf_bid_prices[0] + price_adjustment if self.etf_bid_prices[0] != 0 else 0
+            # new_ask_price = self.etf_ask_prices[0] + price_adjustment if self.etf_ask_prices[0] != 0 else 0
+            # print(new_bid_price, new_ask_price)
 
-            print(self.good_to_buy, self.good_to_sell)
+            # print(self.good_to_buy, self.good_to_sell)
 
             for bid in self.etf_bid_prices:
+                print(bid)
 
                 if bid < future_lwr_bound:
+                    new_bid_price = bid_prices[0] - TICK_SIZE_IN_CENTS if bid_prices[0] != 0 else 0
+                    
                     # We're only hitting, so no need to cancel orders
                     # 
                     if self.bid_id != 0 and new_bid_price not in (self.bid_price, 0):
-                        self.send_cancel_order(self.bid_id)
-                        self.bid_id = 0
+                        # self.send_cancel_order(self.bid_id)
+                        # self.bid_id = 0
+                        new_bid_price = bid_prices[0]
 
-                    # new_bid_price = bid_prices[0] if bid_prices[0] != 0 else 0
+                    
+                    
                     
                     if self.bid_id == 0 and self.position < POSITION_LIMIT and new_bid_price != 0: 
                         
                         if self.good_to_buy:
+                            print("good to buy")
                             self.bid_id = next(self.order_ids)
                             self.bid_price = new_bid_price
                         
-                        if ((self.position + LOT_SIZE) >= POSITION_LIMIT):
-                            self.send_insert_order(self.bid_id, Side.BUY, new_bid_price, POSITION_LIMIT - self.position - 1, Lifespan.FILL_AND_KILL)
+                            if ((self.position + LOT_SIZE) >= POSITION_LIMIT):
+                                lot = POSITION_LIMIT - self.position - 1
+                            else:
+                                lot = LOT_SIZE
+                            
+                            print("attemping to buy")
+                            self.send_insert_order(self.bid_id, Side.BUY, new_bid_price, lot, Lifespan.FAK)
                             self.bids.add(self.bid_id)
-                        else:
-                            self.send_insert_order(self.bid_id, Side.BUY, new_bid_price, LOT_SIZE, Lifespan.FILL_AND_KILL)
-                            self.bids.add(self.bid_id)
+                            print("bought")
                         
 
             for ask in self.etf_ask_prices:
+                print(ask)
 
                 if ask > future_upr_bound:
+                    new_ask_price = ask_prices[0] + TICK_SIZE_IN_CENTS if ask_prices[0] != 0 else 0
+                    
                     # We're only hitting, so no need to cancel orders
                     # 
                     if self.ask_id != 0 and new_ask_price not in (self.ask_price, 0):
-                        self.send_cancel_order(self.ask_id)
-                        self.ask_id = 0
-
-                    # new_ask_price = ask_prices[0] if ask_prices[0] != 0 else 0
+                        # self.send_cancel_order(self.ask_id)
+                        # self.ask_id = 0
+                        new_ask_price = ask_prices[0]
                     
                     if self.ask_id == 0 and self.position > -POSITION_LIMIT and new_ask_price != 0: 
                         
                         if self.good_to_sell:
+                            print("good to sell")
                             self.ask_id = next(self.order_ids)
                             self.ask_price = new_ask_price
-                            
                         
-                        if ((self.position - LOT_SIZE) <= -POSITION_LIMIT):
-                            self.send_insert_order(self.ask_id, Side.SELL, new_ask_price, -POSITION_LIMIT + self.position - 1, Lifespan.FILL_AND_KILL)
+                            if ((self.position - LOT_SIZE) <= -POSITION_LIMIT):
+                                lot = POSITION_LIMIT + self.position - 1
+                            else:
+                                lot = LOT_SIZE
+                            
+                            print("attempting to sell")
+                            self.send_insert_order(self.ask_id, Side.SELL, new_ask_price, lot, Lifespan.FAK)
                             self.asks.add(self.ask_id)
-                        else:
-                            self.send_insert_order(self.ask_id, Side.SELL, new_ask_price, LOT_SIZE, Lifespan.FILL_AND_KILL)
-                            self.asks.add(self.ask_id)
+                            print("sold")
                         
 
 
